@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "multi-select-reorder": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "multi_select_reorder.mcp_server"
+      ],
+      "cwd": "."
+    }
+  }
+}

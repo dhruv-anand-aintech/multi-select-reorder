@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "multi-select-reorder"
+version = "0.1.0"
+description = "Local browser MCP tool for multi-select, reorder, and grouped board ordering."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Dhruv Anand" }]
+keywords = ["mcp", "agents", "selection", "reorder", "drag-and-drop"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: User Interfaces",
+]
+dependencies = ["mcp>=1.0.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/dhruv-anand-aintech/multi-select-reorder"
+Repository = "https://github.com/dhruv-anand-aintech/multi-select-reorder"
+Issues = "https://github.com/dhruv-anand-aintech/multi-select-reorder/issues"
+
+[project.scripts]
+multi-select-reorder = "multi_select_reorder.cli:main"
+multi-select-reorder-mcp = "multi_select_reorder.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["multi_select_reorder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

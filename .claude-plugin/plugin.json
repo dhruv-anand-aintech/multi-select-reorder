@@ -1,0 +1,12 @@
+{
+  "name": "multi-select-reorder",
+  "version": "0.1.0",
+  "description": "Ad hoc web UI for multi-select, reorder, and grouped board ordering.",
+  "author": {
+    "name": "Dhruv Anand"
+  },
+  "homepage": "https://github.com/dhruv-anand-aintech/multi-select-reorder",
+  "repository": "https://github.com/dhruv-anand-aintech/multi-select-reorder",
+  "license": "MIT",
+  "skills": "./skills/"
+}

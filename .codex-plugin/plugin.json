@@ -1,0 +1,38 @@
+{
+  "name": "multi-select-reorder",
+  "version": "0.1.0",
+  "description": "Ad hoc web UI for multi-select, reorder, and grouped board ordering.",
+  "author": {
+    "name": "Dhruv Anand"
+  },
+  "homepage": "https://github.com/dhruv-anand-aintech/multi-select-reorder",
+  "repository": "https://github.com/dhruv-anand-aintech/multi-select-reorder",
+  "license": "MIT",
+  "keywords": [
+    "multi-select",
+    "reorder",
+    "web",
+    "selection",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Multi Select Reorder",
+    "shortDescription": "Multi-select, reorder, and group choices",
+    "longDescription": "Multi Select Reorder opens a short-lived local web page for checkbox selection, drag-and-drop ordering, and grouped board ordering, then returns the submitted result to the agent through MCP.",
+    "developerName": "Dhruv Anand",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/dhruv-anand-aintech/multi-select-reorder",
+    "defaultPrompt": [
+      "Use multi_select_reorder to choose and order these options"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}
