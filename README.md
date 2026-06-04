@@ -45,14 +45,26 @@ Point any MCP-capable agent at this project directory:
 The included `.mcp.json` uses the same server command with a relative `cwd` for
 plugin-style installs.
 
-## Codex and Claude-style plugin metadata
+## Codex, Claude, and Cursor plugin metadata
 
 This repo includes:
 
+- `.cursor-plugin/plugin.json`
 - `.codex-plugin/plugin.json`
 - `.claude-plugin/plugin.json`
 - `.mcp.json`
 - `skills/multi-select-reorder/SKILL.md`
+
+### Cursor local install
+
+Symlink or copy this repo into Cursor’s local plugin directory, then enable the plugin in Cursor Settings:
+
+```bash
+mkdir -p ~/.cursor/plugins/local
+ln -sfn "$(pwd)" ~/.cursor/plugins/local/multi-select-reorder
+```
+
+Reload the window (or restart Cursor) so the `multi-select-reorder` skill and MCP server are discovered.
 
 Those files are intended to keep the same Codex MCP tool name:
 `multi_select_reorder`.
