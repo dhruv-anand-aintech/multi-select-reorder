@@ -1,4 +1,8 @@
-from multi_select_reorder.mcp_server import _coerce_browser_group_result, _coerce_browser_result
+from multi_select_reorder.mcp_server import (
+    _coerce_browser_group_result,
+    _coerce_browser_result,
+    _coerce_rating_result,
+)
 from multi_select_reorder.selector import normalize_groups, normalize_options
 
 
@@ -59,5 +63,36 @@ def test_group_browser_result_returns_grouped_and_flat_selected_order() -> None:
             "live": "Live",
         },
         "descriptions": {"c": "Edited"},
+        "cancelled": False,
+    }
+
+
+def test_rating_result_returns_rank_reject_and_pair_choices() -> None:
+    options = normalize_options([["a", "Alpha"], ["b", "Beta"], ["c", "Gamma"]])
+
+    result = _coerce_rating_result(
+        options,
+        {
+            "ordered": ["b", "a", "missing"],
+            "rejected": ["c"],
+            "choices": [
+                {"winner": "b", "loser": "a"},
+                {"winner": "missing", "loser": "a"},
+            ],
+            "scores": {"b": 2, "a": 1, "missing": 9},
+            "cancelled": False,
+        },
+        mode="facemash",
+    )
+
+    assert result == {
+        "mode": "rating_tool",
+        "rating_mode": "facemash",
+        "selected": ["b", "a"],
+        "ordered": ["b", "a"],
+        "rejected": ["c"],
+        "ratings": {"b": 1, "a": 2, "c": 0},
+        "choices": [{"winner": "b", "loser": "a"}],
+        "scores": {"b": 2.0, "a": 1.0},
         "cancelled": False,
     }

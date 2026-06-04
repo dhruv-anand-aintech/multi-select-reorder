@@ -212,6 +212,87 @@ def _select_groups_in_browser(
         thread.join(timeout=1)
 
 
+def _rate_in_browser(
+    title: str,
+    options: list[Any],
+    *,
+    mode: str = "rank",
+    initial_selected: list[Any] | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_options(options, initial_selected=initial_selected)
+    if not normalized:
+        return _error_result("options are required")
+    if mode not in {"rank", "tinder", "facemash", "pair"}:
+        return _error_result("mode must be one of: rank, tinder, facemash, pair")
+
+    state: dict[str, Any] = {"result": None}
+    done = threading.Event()
+    page = _rating_page(
+        title=title,
+        mode=mode,
+        options=[
+            {
+                "id": option.id,
+                "label": option.label,
+                "description": option.description,
+                "selected": option.selected,
+            }
+            for option in normalized
+        ],
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def do_GET(self) -> None:
+            if self.path not in {"/", "/index.html"}:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            body = page.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            if self.path != "/submit":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            length = int(self.headers.get("Content-Length") or "0")
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            state["result"] = _coerce_rating_result(normalized, payload, mode=mode)
+            done.set()
+            body = b'{"ok":true}'
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    try:
+        _open_browser(url)
+        if not done.wait(3600):
+            return _error_result("Rating UI timed out after 1 hour")
+        result = state.get("result")
+        if isinstance(result, dict):
+            return result
+        return _error_result("Rating UI returned no result")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
 def _open_browser(url: str) -> None:
     if platform.system() == "Darwin":
         subprocess.run(["open", url], check=False)
@@ -273,6 +354,45 @@ def _coerce_browser_group_result(groups: list[OptionGroup], payload: dict[str, A
         "grouped_order": grouped_order,
         "group_labels": group_labels,
         "descriptions": descriptions,
+        "cancelled": bool(payload.get("cancelled", False)),
+    }
+
+
+def _coerce_rating_result(options: list[Any], payload: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    valid_ids = {option.id for option in options}
+    raw_ordered = payload.get("ordered", [])
+    ordered = [str(item) for item in raw_ordered if str(item) in valid_ids] if isinstance(raw_ordered, list) else []
+    raw_rejected = payload.get("rejected", [])
+    rejected = [str(item) for item in raw_rejected if str(item) in valid_ids] if isinstance(raw_rejected, list) else []
+    raw_choices = payload.get("choices", [])
+    choices = [
+        {
+            "winner": str(choice.get("winner")),
+            "loser": str(choice.get("loser")),
+        }
+        for choice in raw_choices
+        if isinstance(choice, dict)
+        and str(choice.get("winner")) in valid_ids
+        and str(choice.get("loser")) in valid_ids
+    ] if isinstance(raw_choices, list) else []
+    raw_scores = payload.get("scores", {})
+    scores = {
+        str(key): float(value)
+        for key, value in raw_scores.items()
+        if str(key) in valid_ids and isinstance(value, (int, float))
+    } if isinstance(raw_scores, dict) else {}
+    ratings = {item: index + 1 for index, item in enumerate(ordered)}
+    ratings.update({item: 0 for item in rejected})
+    selected = [item for item in ordered if item not in rejected]
+    return {
+        "mode": "rating_tool",
+        "rating_mode": mode,
+        "selected": selected,
+        "ordered": ordered,
+        "rejected": rejected,
+        "ratings": ratings,
+        "choices": choices,
+        "scores": scores,
         "cancelled": bool(payload.get("cancelled", False)),
     }
 
@@ -614,6 +734,169 @@ render();
     return html.replace("__TITLE__", _html_escape(title)).replace("__DATA__", data)
 
 
+def _rating_page(title: str, options: list[dict[str, Any]], *, mode: str) -> str:
+    data = json.dumps({"title": title, "mode": mode, "options": options}, ensure_ascii=False)
+    html = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { max-width: 920px; margin: 28px auto; padding: 0 20px 28px; }
+h1 { font-size: 24px; margin: 0 0 8px; }
+.hint { color: color-mix(in srgb, CanvasText 68%, Canvas); margin: 0 0 18px; }
+.list { display: grid; gap: 8px; }
+.option { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid color-mix(in srgb, CanvasText 16%, Canvas); border-radius: 8px; background: Canvas; }
+.option[draggable="true"] { cursor: grab; }
+.option.dragging { opacity: .45; }
+.rank { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: Highlight; color: HighlightText; font-weight: 700; }
+.label { font-weight: 650; }
+.description { font-size: 13px; color: color-mix(in srgb, CanvasText 62%, Canvas); margin-top: 3px; }
+.actions { display: flex; gap: 6px; }
+.choice { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: stretch; }
+.choice button.card { min-height: 160px; text-align: left; font-size: 18px; }
+.versus { display: grid; place-items: center; font-weight: 800; color: color-mix(in srgb, CanvasText 55%, Canvas); }
+details { margin-top: 12px; border: 1px dashed color-mix(in srgb, CanvasText 20%, Canvas); border-radius: 8px; padding: 8px 10px; }
+footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+button { appearance: none; border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); border-radius: 7px; background: Canvas; color: CanvasText; padding: 9px 14px; font: inherit; cursor: pointer; }
+button.primary { background: Highlight; border-color: Highlight; color: HighlightText; }
+</style>
+</head>
+<body>
+<main>
+<h1 id="title"></h1>
+<p id="hint" class="hint"></p>
+<section id="app"></section>
+<footer>
+<button id="cancel" type="button">Cancel</button>
+<button id="submit" class="primary" type="button">Submit</button>
+</footer>
+</main>
+<script>
+const DATA = __DATA__;
+let order = DATA.options.filter(o => o.selected !== false).map(o => o.id);
+let rejected = DATA.options.filter(o => o.selected === false).map(o => o.id);
+let choices = [];
+let scores = Object.fromEntries(DATA.options.map(o => [o.id, 0]));
+let pairIndex = 0;
+let dragId = null;
+const byId = new Map(DATA.options.map(o => [o.id, o]));
+const app = document.getElementById("app");
+document.getElementById("title").textContent = DATA.title;
+document.getElementById("hint").textContent = hint();
+
+function hint() {
+  if (DATA.mode === "tinder") return "Accept or reject one option at a time.";
+  if (DATA.mode === "facemash") return "Pick the better option in each face-off.";
+  if (DATA.mode === "pair") return "Pick winners for pairwise preferences, then submit.";
+  return "Drag to rank preferences. Reject means rating 0.";
+}
+function renderOption(id, rank, isRejected=false) {
+  const option = byId.get(id);
+  const row = document.createElement("div");
+  row.className = "option";
+  row.draggable = !isRejected;
+  row.dataset.id = id;
+  row.innerHTML = `<div class="rank">${isRejected ? "0" : rank}</div><div><div class="label"></div><div class="description"></div></div><div class="actions"></div>`;
+  row.querySelector(".label").textContent = option.label;
+  row.querySelector(".description").textContent = option.description || "";
+  const btn = document.createElement("button");
+  btn.textContent = isRejected ? "Restore" : "Reject";
+  btn.onclick = () => { moveReject(id, !isRejected); render(); };
+  row.querySelector(".actions").append(btn);
+  row.addEventListener("dragstart", () => { dragId = id; row.classList.add("dragging"); });
+  row.addEventListener("dragend", () => row.classList.remove("dragging"));
+  row.addEventListener("dragover", event => event.preventDefault());
+  row.addEventListener("drop", event => { event.preventDefault(); moveBefore(dragId, id); render(); });
+  return row;
+}
+function moveReject(id, reject) {
+  order = order.filter(x => x !== id);
+  rejected = rejected.filter(x => x !== id);
+  if (reject) rejected.push(id); else order.push(id);
+}
+function moveBefore(fromId, toId) {
+  if (!fromId || fromId === toId) return;
+  const next = order.filter(id => id !== fromId);
+  next.splice(next.indexOf(toId), 0, fromId);
+  order = next;
+}
+function renderRank() {
+  app.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "list";
+  order.forEach((id, index) => list.append(renderOption(id, index + 1)));
+  app.append(list);
+  const details = document.createElement("details");
+  details.innerHTML = `<summary>Rejected (${rejected.length})</summary>`;
+  const rejectList = document.createElement("div");
+  rejectList.className = "list";
+  rejected.forEach(id => rejectList.append(renderOption(id, 0, true)));
+  details.append(rejectList);
+  app.append(details);
+}
+function renderTinder() {
+  app.innerHTML = "";
+  const remaining = DATA.options.map(o => o.id).filter(id => !order.includes(id) && !rejected.includes(id));
+  if (!remaining.length) { app.innerHTML = "<p class='hint'>All options reviewed.</p>"; return; }
+  const id = remaining[0];
+  const option = byId.get(id);
+  app.innerHTML = `<div class="option"><div class="rank">${remaining.length}</div><div><div class="label"></div><div class="description"></div></div><div class="actions"><button id="reject">Reject</button><button id="accept" class="primary">Accept</button></div></div>`;
+  app.querySelector(".label").textContent = option.label;
+  app.querySelector(".description").textContent = option.description || "";
+  app.querySelector("#accept").onclick = () => { order.push(id); render(); };
+  app.querySelector("#reject").onclick = () => { rejected.push(id); render(); };
+}
+function pairs() {
+  const ids = DATA.options.map(o => o.id);
+  const out = [];
+  for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) out.push([ids[i], ids[j]]);
+  return out;
+}
+function choosePair(winner, loser) {
+  choices.push({winner, loser});
+  scores[winner] = (scores[winner] || 0) + 1;
+  scores[loser] = scores[loser] || 0;
+  pairIndex++;
+  order = [...DATA.options.map(o => o.id)].sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
+  render();
+}
+function renderPair() {
+  const allPairs = pairs();
+  app.innerHTML = "";
+  if (pairIndex >= allPairs.length) { app.innerHTML = "<p class='hint'>All pairs reviewed.</p>"; return; }
+  const [a, b] = allPairs[pairIndex];
+  const ao = byId.get(a), bo = byId.get(b);
+  app.innerHTML = `<div class="choice"><button class="card" id="a"><strong></strong><p></p></button><div class="versus">vs</div><button class="card" id="b"><strong></strong><p></p></button></div><p class="hint">${pairIndex + 1} / ${allPairs.length}</p>`;
+  app.querySelector("#a strong").textContent = ao.label;
+  app.querySelector("#a p").textContent = ao.description || "";
+  app.querySelector("#b strong").textContent = bo.label;
+  app.querySelector("#b p").textContent = bo.description || "";
+  app.querySelector("#a").onclick = () => choosePair(a, b);
+  app.querySelector("#b").onclick = () => choosePair(b, a);
+}
+function render() {
+  if (DATA.mode === "tinder") renderTinder();
+  else if (DATA.mode === "facemash" || DATA.mode === "pair") renderPair();
+  else renderRank();
+}
+async function finish(cancelled) {
+  const payload = { ordered: order, rejected, choices, scores, cancelled };
+  await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
+}
+document.getElementById("submit").onclick = () => finish(false);
+document.getElementById("cancel").onclick = () => finish(true);
+render();
+</script>
+</body>
+</html>"""
+    return html.replace("__TITLE__", _html_escape(title)).replace("__DATA__", data)
+
+
 def _html_escape(value: str) -> str:
     return (
         value.replace("&", "&amp;")
@@ -656,6 +939,24 @@ def multi_select_reorder(
         edit_descriptions=edit_descriptions,
         groups=groups,
     )
+
+
+@mcp.tool()
+def rating_tool(
+    title: str,
+    options: list[Any],
+    mode: str = "rank",
+    initial_selected: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Open a local rating UI.
+
+    Modes:
+    - rank: drag-and-drop preference ranking with reject/rating 0.
+    - tinder: single-option accept/reject flow.
+    - facemash: pairwise winner face-offs, scored by wins.
+    - pair: alias-style pair preference flow with all pair comparisons.
+    """
+    return _rate_in_browser(title, options, mode=mode, initial_selected=initial_selected)
 
 
 def main() -> None:
