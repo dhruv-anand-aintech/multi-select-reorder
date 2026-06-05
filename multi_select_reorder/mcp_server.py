@@ -752,6 +752,7 @@ h1 { font-size: 24px; margin: 0 0 8px; }
 .option { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid color-mix(in srgb, CanvasText 16%, Canvas); border-radius: 8px; background: Canvas; }
 .option[draggable="true"] { cursor: grab; }
 .option.dragging { opacity: .45; }
+.option.focused { outline: 2px solid Highlight; outline-offset: 1px; }
 .rank { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: Highlight; color: HighlightText; font-weight: 700; }
 .label { font-weight: 650; }
 .description { font-size: 13px; color: color-mix(in srgb, CanvasText 62%, Canvas); margin-top: 3px; }
@@ -777,8 +778,10 @@ button.primary { background: Highlight; border-color: Highlight; color: Highligh
 </main>
 <script>
 const DATA = __DATA__;
-let order = DATA.options.filter(o => o.selected !== false).map(o => o.id);
-let rejected = DATA.options.filter(o => o.selected === false).map(o => o.id);
+// Only rank mode pre-seeds the ordered list; accept/reject and face-off modes
+// start empty so every option is presented as "remaining" to review.
+let order = DATA.mode === "rank" ? DATA.options.filter(o => o.selected !== false).map(o => o.id) : [];
+let rejected = DATA.mode === "rank" ? DATA.options.filter(o => o.selected === false).map(o => o.id) : [];
 let choices = [];
 let scores = Object.fromEntries(DATA.options.map(o => [o.id, 0]));
 let pairIndex = 0;
@@ -789,10 +792,10 @@ document.getElementById("title").textContent = DATA.title;
 document.getElementById("hint").textContent = hint();
 
 function hint() {
-  if (DATA.mode === "tinder") return "Accept or reject one option at a time.";
-  if (DATA.mode === "facemash") return "Pick the better option in each face-off.";
-  if (DATA.mode === "pair") return "Pick winners for pairwise preferences, then submit.";
-  return "Drag to rank preferences. Reject means rating 0.";
+  if (DATA.mode === "tinder") return "Accept (→/Enter) or reject (←/Backspace) one at a time. Esc cancels.";
+  if (DATA.mode === "facemash") return "Pick the better option: ← left, → right. Esc cancels.";
+  if (DATA.mode === "pair") return "Pick winners: ← left, → right. Esc cancels.";
+  return "↑/↓ move focus, Shift+↑/↓ reorder, r reject, Enter submit, Esc cancel. Drag also works.";
 }
 function renderOption(id, rank, isRejected=false) {
   const option = byId.get(id);
@@ -890,7 +893,73 @@ async function finish(cancelled) {
 }
 document.getElementById("submit").onclick = () => finish(false);
 document.getElementById("cancel").onclick = () => finish(true);
+
+// --- Keyboard navigation -------------------------------------------------
+// tinder:    left/Backspace = reject, right/Enter = accept
+// facemash/pair: left = pick left card, right = pick right card
+// rank:     up/down move focus, shift+up/down reorder, r/Delete reject-toggle
+// global:   Enter (rank) submit, Esc cancel
+let focusIdx = 0;
+function clampFocus() {
+  if (focusIdx < 0) focusIdx = 0;
+  if (focusIdx > order.length - 1) focusIdx = order.length - 1;
+}
+function paintFocus() {
+  const rows = [...app.querySelectorAll(".list > .option")];
+  rows.forEach((r, i) => r.classList.toggle("focused", i === focusIdx));
+  rows[focusIdx]?.scrollIntoView({ block: "nearest" });
+}
+const _origRenderRank = renderRank;
+renderRank = function () {
+  _origRenderRank();
+  clampFocus();
+  paintFocus();
+};
+document.addEventListener("keydown", event => {
+  const k = event.key;
+  if (k === "Escape") { event.preventDefault(); finish(true); return; }
+  if (DATA.mode === "tinder") {
+    const remaining = DATA.options.map(o => o.id).filter(id => !order.includes(id) && !rejected.includes(id));
+    const id = remaining[0];
+    if (!id) { if (k === "Enter") finish(false); return; }
+    if (k === "ArrowRight" || k === "Enter") { event.preventDefault(); order.push(id); render(); }
+    else if (k === "ArrowLeft" || k === "Backspace") { event.preventDefault(); rejected.push(id); render(); }
+    return;
+  }
+  if (DATA.mode === "facemash" || DATA.mode === "pair") {
+    const allPairs = pairs();
+    if (pairIndex >= allPairs.length) { if (k === "Enter") finish(false); return; }
+    const [a, b] = allPairs[pairIndex];
+    if (k === "ArrowLeft") { event.preventDefault(); choosePair(a, b); }
+    else if (k === "ArrowRight") { event.preventDefault(); choosePair(b, a); }
+    return;
+  }
+  // rank mode
+  if (k === "Enter") { event.preventDefault(); finish(false); return; }
+  if (!order.length) return;
+  if (k === "ArrowDown") {
+    event.preventDefault();
+    if (event.shiftKey && focusIdx < order.length - 1) {
+      const id = order[focusIdx];
+      order.splice(focusIdx, 1); order.splice(focusIdx + 1, 0, id);
+      focusIdx++; render();
+    } else { focusIdx++; clampFocus(); paintFocus(); }
+  } else if (k === "ArrowUp") {
+    event.preventDefault();
+    if (event.shiftKey && focusIdx > 0) {
+      const id = order[focusIdx];
+      order.splice(focusIdx, 1); order.splice(focusIdx - 1, 0, id);
+      focusIdx--; render();
+    } else { focusIdx--; clampFocus(); paintFocus(); }
+  } else if (k === "r" || k === "Delete") {
+    event.preventDefault();
+    const id = order[focusIdx];
+    if (id) { moveReject(id, true); render(); }
+  }
+});
+
 render();
+if (DATA.mode === "rank") paintFocus();
 </script>
 </body>
 </html>"""
