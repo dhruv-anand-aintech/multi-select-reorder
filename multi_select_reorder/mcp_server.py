@@ -293,6 +293,229 @@ def _rate_in_browser(
         thread.join(timeout=1)
 
 
+def _choice_in_browser(title: str, questions: list[OptionGroup]) -> dict[str, Any]:
+    """Survey-style pick-one-per-question UI.
+
+    Each question is an OptionGroup: the group label is the prompt, its options
+    are the candidate answers. Keyboard: left/right pick a candidate within the
+    focused question, up/down move between questions, Enter submits, Esc cancels.
+    """
+    if not questions:
+        return _error_result("questions are required")
+    state: dict[str, Any] = {"result": None}
+    done = threading.Event()
+    page = _choice_page(
+        title=title,
+        questions=[
+            {
+                "id": q.id,
+                "label": q.label,
+                "options": [
+                    {"id": o.id, "label": o.label, "description": o.description, "selected": o.selected}
+                    for o in q.options
+                ],
+            }
+            for q in questions
+        ],
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def do_GET(self) -> None:
+            if self.path not in {"/", "/index.html"}:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            body = page.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            if self.path != "/submit":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            length = int(self.headers.get("Content-Length") or "0")
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            state["result"] = _coerce_choice_result(questions, payload)
+            done.set()
+            body = b'{"ok":true}'
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    try:
+        _open_browser(url)
+        if not done.wait(3600):
+            return _error_result("Choice UI timed out after 1 hour")
+        result = state.get("result")
+        if isinstance(result, dict):
+            return result
+        return _error_result("Choice UI returned no result")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
+def _coerce_choice_result(questions: list[OptionGroup], payload: dict[str, Any]) -> dict[str, Any]:
+    valid = {q.id: {o.id for o in q.options} for q in questions}
+    raw = payload.get("answers", {})
+    answers: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for qid, oid in raw.items():
+            qid, oid = str(qid), str(oid)
+            if qid in valid and oid in valid[qid]:
+                answers[qid] = oid
+    return {
+        "mode": "rating_tool",
+        "rating_mode": "choice",
+        "answers": answers,
+        "question_labels": {q.id: q.label for q in questions},
+        "option_labels": {o.id: o.label for q in questions for o in q.options},
+        "unanswered": [q.id for q in questions if q.id not in answers],
+        "cancelled": bool(payload.get("cancelled", False)),
+    }
+
+
+def _choice_page(title: str, questions: list[dict[str, Any]]) -> str:
+    data = json.dumps({"title": title, "questions": questions}, ensure_ascii=False)
+    html = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { max-width: 920px; margin: 28px auto; padding: 0 20px 28px; }
+h1 { font-size: 24px; margin: 0 0 8px; }
+.hint { color: color-mix(in srgb, CanvasText 68%, Canvas); margin: 0 0 18px; }
+.qlist { display: grid; gap: 10px; }
+.q { padding: 12px 14px; border: 1px solid color-mix(in srgb, CanvasText 16%, Canvas); border-radius: 9px; background: Canvas; }
+.q.focused { outline: 2px solid Highlight; outline-offset: 1px; }
+.qlabel { font-weight: 650; font-size: 17px; margin-bottom: 9px; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 8px 12px; border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas); border-radius: 999px; cursor: pointer; font: inherit; background: Canvas; color: CanvasText; display: grid; }
+.chip .desc { font-size: 11px; color: color-mix(in srgb, CanvasText 55%, Canvas); }
+.chip.chosen { background: Highlight; border-color: Highlight; color: HighlightText; }
+.chip.chosen .desc { color: color-mix(in srgb, HighlightText 80%, Highlight); }
+.chip.cursor { outline: 2px dashed color-mix(in srgb, CanvasText 50%, Canvas); outline-offset: 1px; }
+footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 18px; }
+.progress { color: color-mix(in srgb, CanvasText 60%, Canvas); }
+button { appearance: none; border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); border-radius: 7px; background: Canvas; color: CanvasText; padding: 9px 14px; font: inherit; cursor: pointer; }
+button.primary { background: Highlight; border-color: Highlight; color: HighlightText; }
+</style>
+</head>
+<body>
+<main>
+<h1 id="title"></h1>
+<p id="hint" class="hint"></p>
+<section id="qlist" class="qlist"></section>
+<footer>
+<span id="progress" class="progress"></span>
+<span><button id="cancel" type="button">Cancel</button>
+<button id="submit" class="primary" type="button">Submit</button></span>
+</footer>
+</main>
+<script>
+const DATA = __DATA__;
+const answers = {};       // questionId -> optionId
+const cursorOpt = {};     // questionId -> index of the highlighted candidate
+DATA.questions.forEach(q => {
+  const pre = q.options.find(o => o.selected === true);
+  if (pre) answers[q.id] = pre.id;
+  cursorOpt[q.id] = Math.max(0, q.options.findIndex(o => o.id === (answers[q.id] ?? null)));
+});
+let qFocus = 0;
+const listEl = document.getElementById("qlist");
+document.getElementById("title").textContent = DATA.title;
+document.getElementById("hint").textContent = "←/→ choose an answer, ↑/↓ move between questions, Enter submit, Esc cancel. Click works too.";
+
+function render() {
+  listEl.innerHTML = "";
+  DATA.questions.forEach((q, qi) => {
+    const card = document.createElement("div");
+    card.className = "q" + (qi === qFocus ? " focused" : "");
+    card.dataset.qid = q.id;
+    const label = document.createElement("div");
+    label.className = "qlabel";
+    label.textContent = q.label;
+    const choices = document.createElement("div");
+    choices.className = "choices";
+    q.options.forEach((o, oi) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip"
+        + (answers[q.id] === o.id ? " chosen" : "")
+        + (qi === qFocus && oi === cursorOpt[q.id] ? " cursor" : "");
+      const lab = document.createElement("span");
+      lab.textContent = o.label;
+      chip.append(lab);
+      if (o.description) { const d = document.createElement("span"); d.className = "desc"; d.textContent = o.description; chip.append(d); }
+      chip.onclick = () => { answers[q.id] = o.id; cursorOpt[q.id] = oi; qFocus = qi; render(); };
+      choices.append(chip);
+    });
+    card.append(label, choices);
+    listEl.append(card);
+  });
+  const answered = Object.keys(answers).length;
+  document.getElementById("progress").textContent = answered + " / " + DATA.questions.length + " answered";
+  listEl.children[qFocus]?.scrollIntoView({ block: "nearest" });
+}
+
+document.addEventListener("keydown", event => {
+  const k = event.key;
+  if (k === "Escape") { event.preventDefault(); finish(true); return; }
+  if (k === "Enter") { event.preventDefault(); finish(false); return; }
+  const q = DATA.questions[qFocus];
+  if (!q) return;
+  if (k === "ArrowRight" || k === "ArrowLeft") {
+    event.preventDefault();
+    const n = q.options.length;
+    let i = cursorOpt[q.id] ?? 0;
+    i = (k === "ArrowRight") ? (i + 1) % n : (i - 1 + n) % n;
+    cursorOpt[q.id] = i;
+    answers[q.id] = q.options[i].id;
+    render();
+  } else if (k === "ArrowDown") {
+    event.preventDefault();
+    qFocus = Math.min(DATA.questions.length - 1, qFocus + 1);
+    render();
+  } else if (k === "ArrowUp") {
+    event.preventDefault();
+    qFocus = Math.max(0, qFocus - 1);
+    render();
+  }
+});
+
+async function finish(cancelled) {
+  await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers, cancelled }) });
+  document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
+}
+document.getElementById("submit").onclick = () => finish(false);
+document.getElementById("cancel").onclick = () => finish(true);
+render();
+</script>
+</body>
+</html>"""
+    return html.replace("__TITLE__", _html_escape(title)).replace("__DATA__", data)
+
+
 def _open_browser(url: str) -> None:
     if platform.system() == "Darwin":
         subprocess.run(["open", url], check=False)
@@ -1013,18 +1236,31 @@ def multi_select_reorder(
 @mcp.tool()
 def rating_tool(
     title: str,
-    options: list[Any],
+    options: list[Any] | None = None,
     mode: str = "rank",
     initial_selected: list[Any] | None = None,
+    questions: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Open a local rating UI.
+    """Open a local rating UI. Every mode is keyboard-navigable.
 
     Modes:
     - rank: drag-and-drop preference ranking with reject/rating 0.
+      Keys: up/down focus, shift+up/down reorder, r reject, Enter submit.
     - tinder: single-option accept/reject flow.
-    - facemash: pairwise winner face-offs, scored by wins.
-    - pair: alias-style pair preference flow with all pair comparisons.
+      Keys: right/Enter accept, left/Backspace reject.
+    - facemash / pair: pairwise winner face-offs, scored by wins.
+      Keys: left = left card, right = right card.
+    - choice: survey of many questions, pick one candidate answer each.
+      Pass `questions` as groups: [{id, label, options:[{id,label,description,selected}]}].
+      Keys: left/right choose a candidate, up/down move between questions, Enter submit.
+    Esc cancels in every mode.
     """
+    if mode == "choice":
+        if questions is None:
+            return _error_result("choice mode requires `questions` (a list of groups)")
+        return _choice_in_browser(title, normalize_groups(questions, initial_selected=initial_selected))
+    if options is None:
+        return _error_result("options are required for this mode")
     return _rate_in_browser(title, options, mode=mode, initial_selected=initial_selected)
 
 
