@@ -213,6 +213,18 @@ def _redirect_stdio_to_tty(tty_path: str) -> Any:
 def _selector_loop(stdscr: Any, *, options: list[Option], mode: str, title: str) -> dict[str, Any]:
     curses.curs_set(0)
     stdscr.keypad(True)
+
+    # Explicit color pairs so dark-mode terminals get readable highlights
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)   # cursor highlight
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)                  # title
+    curses.init_pair(3, curses.COLOR_WHITE, -1)                   # normal text
+    HIGHLIGHT = curses.color_pair(1) | curses.A_BOLD
+    TITLE_ATTR = curses.color_pair(2) | curses.A_BOLD
+    NORMAL_ATTR = curses.color_pair(3)
+    DIM_ATTR = curses.A_DIM
+
     selected: set[int] = {index for index, option in enumerate(options) if option.selected}
     ordered: list[int] = list(range(len(options)))
     cursor = 0
@@ -228,26 +240,26 @@ def _selector_loop(stdscr: Any, *, options: list[Option], mode: str, title: str)
 
         stdscr.erase()
         help_text = _help_text(mode)
-        _add_line(stdscr, 0, 0, title[: width - 1], curses.A_BOLD)
-        _add_line(stdscr, 1, 0, help_text[: width - 1], curses.A_DIM)
+        _add_line(stdscr, 0, 0, title[: width - 1], TITLE_ATTR)
+        _add_line(stdscr, 1, 0, help_text[: width - 1], DIM_ATTR)
 
         for row, option_index in enumerate(range(offset, min(len(options), offset + visible_height)), start=3):
             option = options[option_index]
             marker = _marker(option_index, selected, ordered, mode)
             prefix = "> " if option_index == cursor else "  "
             line = f"{prefix}{marker} {option.label}"
-            attr = curses.A_REVERSE if option_index == cursor else curses.A_NORMAL
+            attr = HIGHLIGHT if option_index == cursor else NORMAL_ATTR
             _add_line(stdscr, row, 0, line[: width - 1], attr)
             if option.description and width > 32:
                 desc = f"    {option.description}"
-                _add_line(stdscr, row + 1, 0, desc[: width - 1], curses.A_DIM)
+                _add_line(stdscr, row + 1, 0, desc[: width - 1], DIM_ATTR)
 
         status = f"{len(options)} options"
         if mode == "multi":
             status += f" | {len(selected)} selected"
         if mode == "rank":
             status += f" | {len(ordered)} ranked"
-        _add_line(stdscr, height - 1, 0, status[: width - 1], curses.A_DIM)
+        _add_line(stdscr, height - 1, 0, status[: width - 1], DIM_ATTR)
         stdscr.refresh()
 
         key = stdscr.getch()
