@@ -6,10 +6,25 @@ from multi_select_reorder.mcp_server import (
     _coerce_rating_result,
     _group_selector_page,
     _is_valid_session_payload,
+    _read_json_payload,
     _rating_page,
     _selector_page,
 )
 from multi_select_reorder.selector import normalize_groups, normalize_options
+from http import HTTPStatus
+from io import BytesIO
+
+
+class _FakeHandler:
+    def __init__(self, body: bytes, content_length: str | None = None) -> None:
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = content_length
+        self.rfile = BytesIO(body)
+        self.errors: list[HTTPStatus] = []
+
+    def send_error(self, code: HTTPStatus) -> None:
+        self.errors.append(code)
 
 
 def test_1d_browser_result_keeps_selected_order_only() -> None:
@@ -109,6 +124,32 @@ def test_session_token_validation_requires_exact_payload_token() -> None:
     assert not _is_valid_session_payload({}, "abc")
     assert not _is_valid_session_payload({_SESSION_TOKEN_FIELD: "wrong"}, "abc")
     assert not _is_valid_session_payload([], "abc")
+
+
+def test_read_json_payload_rejects_bad_content_lengths() -> None:
+    for value in ("abc", "-1"):
+        handler = _FakeHandler(b"{}", value)
+        assert _read_json_payload(handler) is None
+        assert handler.errors == [HTTPStatus.BAD_REQUEST]
+
+
+def test_read_json_payload_rejects_oversized_body_before_reading() -> None:
+    handler = _FakeHandler(b"{}", str(1024 * 1024 + 1))
+    assert _read_json_payload(handler) is None
+    assert handler.errors == [HTTPStatus.REQUEST_ENTITY_TOO_LARGE]
+    assert handler.rfile.tell() == 0
+
+
+def test_read_json_payload_rejects_malformed_json() -> None:
+    handler = _FakeHandler(b"{", "1")
+    assert _read_json_payload(handler) is None
+    assert handler.errors == [HTTPStatus.BAD_REQUEST]
+
+
+def test_read_json_payload_returns_valid_json() -> None:
+    handler = _FakeHandler(b'{"ok": true}', "12")
+    assert _read_json_payload(handler) == {"ok": True}
+    assert handler.errors == []
 
 
 def test_browser_pages_embed_session_token_in_submit_payload() -> None:
