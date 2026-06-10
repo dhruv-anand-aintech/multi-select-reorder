@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from multi_select_reorder.selector import OptionGroup, normalize_groups, normalize_options, run_selector
 
 _SESSION_TOKEN_FIELD = "__session_token"
+_MAX_BROWSER_POST_BYTES = 1024 * 1024
 
 mcp = FastMCP(
     "multi-select-reorder",
@@ -103,11 +104,8 @@ def _select_in_browser(title: str, options: list[Any], *, edit_descriptions: boo
             if self.path != "/submit":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            length = int(self.headers.get("Content-Length") or "0")
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            except json.JSONDecodeError:
-                self.send_error(HTTPStatus.BAD_REQUEST)
+            payload = _read_json_payload(self)
+            if payload is None:
                 return
             if not _is_valid_session_payload(payload, session_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -189,11 +187,8 @@ def _select_groups_in_browser(
             if self.path != "/submit":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            length = int(self.headers.get("Content-Length") or "0")
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            except json.JSONDecodeError:
-                self.send_error(HTTPStatus.BAD_REQUEST)
+            payload = _read_json_payload(self)
+            if payload is None:
                 return
             if not _is_valid_session_payload(payload, session_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -275,11 +270,8 @@ def _rate_in_browser(
             if self.path != "/submit":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            length = int(self.headers.get("Content-Length") or "0")
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            except json.JSONDecodeError:
-                self.send_error(HTTPStatus.BAD_REQUEST)
+            payload = _read_json_payload(self)
+            if payload is None:
                 return
             if not _is_valid_session_payload(payload, session_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -358,11 +350,8 @@ def _choice_in_browser(title: str, questions: list[OptionGroup]) -> dict[str, An
             if self.path != "/submit":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            length = int(self.headers.get("Content-Length") or "0")
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            except json.JSONDecodeError:
-                self.send_error(HTTPStatus.BAD_REQUEST)
+            payload = _read_json_payload(self)
+            if payload is None:
                 return
             if not _is_valid_session_payload(payload, session_token):
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -420,6 +409,25 @@ def _new_session_token() -> str:
 
 def _is_valid_session_payload(payload: Any, session_token: str) -> bool:
     return isinstance(payload, dict) and payload.get(_SESSION_TOKEN_FIELD) == session_token
+
+
+def _read_json_payload(handler: BaseHTTPRequestHandler) -> Any | None:
+    try:
+        length = int(handler.headers.get("Content-Length") or "0")
+    except ValueError:
+        handler.send_error(HTTPStatus.BAD_REQUEST)
+        return None
+    if length < 0:
+        handler.send_error(HTTPStatus.BAD_REQUEST)
+        return None
+    if length > _MAX_BROWSER_POST_BYTES:
+        handler.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        return None
+    try:
+        return json.loads(handler.rfile.read(length).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        handler.send_error(HTTPStatus.BAD_REQUEST)
+        return None
 
 
 def _choice_page(title: str, questions: list[dict[str, Any]], *, session_token: str) -> str:
