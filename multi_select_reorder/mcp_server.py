@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import platform
+import secrets
 import subprocess
 import sys
 import threading
@@ -15,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mcp.server.fastmcp import FastMCP
 
 from multi_select_reorder.selector import OptionGroup, normalize_groups, normalize_options, run_selector
+
+_SESSION_TOKEN_FIELD = "__session_token"
 
 mcp = FastMCP(
     "multi-select-reorder",
@@ -65,9 +68,11 @@ def _select(
 def _select_in_browser(title: str, options: list[Any], *, edit_descriptions: bool = False) -> dict[str, Any]:
     state: dict[str, Any] = {"result": None}
     done = threading.Event()
+    session_token = _new_session_token()
     page = _selector_page(
         title=title,
         edit_descriptions=edit_descriptions,
+        session_token=session_token,
         options=[
             {
                 "id": option.id,
@@ -104,6 +109,9 @@ def _select_in_browser(title: str, options: list[Any], *, edit_descriptions: boo
             except json.JSONDecodeError:
                 self.send_error(HTTPStatus.BAD_REQUEST)
                 return
+            if not _is_valid_session_payload(payload, session_token):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
             state["result"] = _coerce_browser_result(options, payload)
             done.set()
             body = b'{"ok":true}'
@@ -139,9 +147,11 @@ def _select_groups_in_browser(
 ) -> dict[str, Any]:
     state: dict[str, Any] = {"result": None}
     done = threading.Event()
+    session_token = _new_session_token()
     page = _group_selector_page(
         title=title,
         edit_descriptions=edit_descriptions,
+        session_token=session_token,
         groups=[
             {
                 "id": group.id,
@@ -185,6 +195,9 @@ def _select_groups_in_browser(
             except json.JSONDecodeError:
                 self.send_error(HTTPStatus.BAD_REQUEST)
                 return
+            if not _is_valid_session_payload(payload, session_token):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
             state["result"] = _coerce_browser_group_result(groups, payload)
             done.set()
             body = b'{"ok":true}'
@@ -227,9 +240,11 @@ def _rate_in_browser(
 
     state: dict[str, Any] = {"result": None}
     done = threading.Event()
+    session_token = _new_session_token()
     page = _rating_page(
         title=title,
         mode=mode,
+        session_token=session_token,
         options=[
             {
                 "id": option.id,
@@ -265,6 +280,9 @@ def _rate_in_browser(
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
             except json.JSONDecodeError:
                 self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            if not _is_valid_session_payload(payload, session_token):
+                self.send_error(HTTPStatus.FORBIDDEN)
                 return
             state["result"] = _coerce_rating_result(normalized, payload, mode=mode)
             done.set()
@@ -304,8 +322,10 @@ def _choice_in_browser(title: str, questions: list[OptionGroup]) -> dict[str, An
         return _error_result("questions are required")
     state: dict[str, Any] = {"result": None}
     done = threading.Event()
+    session_token = _new_session_token()
     page = _choice_page(
         title=title,
+        session_token=session_token,
         questions=[
             {
                 "id": q.id,
@@ -343,6 +363,9 @@ def _choice_in_browser(title: str, questions: list[OptionGroup]) -> dict[str, An
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
             except json.JSONDecodeError:
                 self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            if not _is_valid_session_payload(payload, session_token):
+                self.send_error(HTTPStatus.FORBIDDEN)
                 return
             state["result"] = _coerce_choice_result(questions, payload)
             done.set()
@@ -391,8 +414,19 @@ def _coerce_choice_result(questions: list[OptionGroup], payload: dict[str, Any])
     }
 
 
-def _choice_page(title: str, questions: list[dict[str, Any]]) -> str:
-    data = json.dumps({"title": title, "questions": questions}, ensure_ascii=False)
+def _new_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _is_valid_session_payload(payload: Any, session_token: str) -> bool:
+    return isinstance(payload, dict) and payload.get(_SESSION_TOKEN_FIELD) == session_token
+
+
+def _choice_page(title: str, questions: list[dict[str, Any]], *, session_token: str) -> str:
+    data = json.dumps(
+        {"title": title, "questions": questions, "sessionToken": session_token},
+        ensure_ascii=False,
+    )
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -504,7 +538,7 @@ document.addEventListener("keydown", event => {
 });
 
 async function finish(cancelled) {
-  await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers, cancelled }) });
+  await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers, cancelled, __session_token: DATA.sessionToken }) });
   document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
 }
 document.getElementById("submit").onclick = () => finish(false);
@@ -620,8 +654,22 @@ def _coerce_rating_result(options: list[Any], payload: dict[str, Any], *, mode: 
     }
 
 
-def _selector_page(title: str, options: list[dict[str, str]], *, edit_descriptions: bool = False) -> str:
-    data = json.dumps({"title": title, "options": options, "editDescriptions": edit_descriptions}, ensure_ascii=False)
+def _selector_page(
+    title: str,
+    options: list[dict[str, str]],
+    *,
+    edit_descriptions: bool = False,
+    session_token: str,
+) -> str:
+    data = json.dumps(
+        {
+            "title": title,
+            "options": options,
+            "editDescriptions": edit_descriptions,
+            "sessionToken": session_token,
+        },
+        ensure_ascii=False,
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -769,7 +817,8 @@ async function finish(cancelled) {{
     selected: state.selected,
     ordered: state.ordered,
     descriptions: state.descriptions,
-    cancelled
+    cancelled,
+    __session_token: DATA.sessionToken
   }};
   await fetch("/submit", {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(payload) }});
   document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
@@ -783,8 +832,22 @@ render();
 </html>"""
 
 
-def _group_selector_page(title: str, groups: list[dict[str, Any]], *, edit_descriptions: bool = False) -> str:
-    data = json.dumps({"title": title, "groups": groups, "editDescriptions": edit_descriptions}, ensure_ascii=False)
+def _group_selector_page(
+    title: str,
+    groups: list[dict[str, Any]],
+    *,
+    edit_descriptions: bool = False,
+    session_token: str,
+) -> str:
+    data = json.dumps(
+        {
+            "title": title,
+            "groups": groups,
+            "editDescriptions": edit_descriptions,
+            "sessionToken": session_token,
+        },
+        ensure_ascii=False,
+    )
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -942,7 +1005,8 @@ async function finish(cancelled) {
     ordered: state.ordered,
     grouped_order: state.grouped_order,
     descriptions: state.descriptions,
-    cancelled
+    cancelled,
+    __session_token: DATA.sessionToken
   };
   await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
@@ -957,8 +1021,11 @@ render();
     return html.replace("__TITLE__", _html_escape(title)).replace("__DATA__", data)
 
 
-def _rating_page(title: str, options: list[dict[str, Any]], *, mode: str) -> str:
-    data = json.dumps({"title": title, "mode": mode, "options": options}, ensure_ascii=False)
+def _rating_page(title: str, options: list[dict[str, Any]], *, mode: str, session_token: str) -> str:
+    data = json.dumps(
+        {"title": title, "mode": mode, "options": options, "sessionToken": session_token},
+        ensure_ascii=False,
+    )
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -1110,7 +1177,7 @@ function render() {
   else renderRank();
 }
 async function finish(cancelled) {
-  const payload = { ordered: order, rejected, choices, scores, cancelled };
+  const payload = { ordered: order, rejected, choices, scores, cancelled, __session_token: DATA.sessionToken };
   await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   document.body.innerHTML = "<main><h1>Submitted</h1><p class='hint'>You can close this tab.</p></main>";
 }
